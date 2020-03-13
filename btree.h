@@ -554,10 +554,12 @@ class btree_node {
     return params_type::key(fields_.values[i]);
   }
   reference value(int i) {
-    return reinterpret_cast<reference>(fields_.values[i]);
+    mutable_value_type *ptr = (mutable_value_type*)&fields_.values[i];
+    return reinterpret_cast<reference>(*ptr);
   }
   const_reference value(int i) const {
-    return reinterpret_cast<const_reference>(fields_.values[i]);
+    value_type *ptr = (value_type*)&fields_.values[i];
+    return reinterpret_cast<const_reference>(*ptr);
   }
   mutable_value_type* mutable_value(int i) {
     return &fields_.values[i];
