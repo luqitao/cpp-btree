@@ -47,8 +47,8 @@ class btree_container {
 
  public:
   // Default constructor.
-  btree_container(const key_compare &comp, const allocator_type &alloc)
-      : tree_(comp, alloc) {
+  btree_container(const key_compare &comp, const allocator_type &alloc, int value_size)
+      : tree_(comp, alloc, value_size) {
   }
 
   // Copy constructor.
@@ -160,8 +160,9 @@ class btree_unique_container : public btree_container<Tree> {
  public:
   // Default constructor.
   btree_unique_container(const key_compare &comp = key_compare(),
-                         const allocator_type &alloc = allocator_type())
-      : super_type(comp, alloc) {
+                         const allocator_type &alloc = allocator_type(),
+                         int value_size = sizeof(value_type))
+      : super_type(comp, alloc, value_size) {
   }
 
   // Copy constructor.
@@ -172,9 +173,10 @@ class btree_unique_container : public btree_container<Tree> {
   // Range constructor.
   template <class InputIterator>
   btree_unique_container(InputIterator b, InputIterator e,
+                         int value_size = sizeof(value_type),
                          const key_compare &comp = key_compare(),
                          const allocator_type &alloc = allocator_type())
-      : super_type(comp, alloc) {
+      : super_type(comp, alloc, value_size) {
     insert(b, e);
   }
 
@@ -247,8 +249,9 @@ class btree_map_container : public btree_unique_container<Tree> {
  public:
   // Default constructor.
   btree_map_container(const key_compare &comp = key_compare(),
-                      const allocator_type &alloc = allocator_type())
-      : super_type(comp, alloc) {
+                      const allocator_type &alloc = allocator_type(),
+                      int value_size = sizeof(value_type))
+      : super_type(comp, alloc, value_size) {
   }
 
   // Copy constructor.
@@ -260,8 +263,9 @@ class btree_map_container : public btree_unique_container<Tree> {
   template <class InputIterator>
   btree_map_container(InputIterator b, InputIterator e,
                       const key_compare &comp = key_compare(),
-                      const allocator_type &alloc = allocator_type())
-      : super_type(b, e, comp, alloc) {
+                      const allocator_type &alloc = allocator_type(),
+                      int value_size = sizeof(value_type))
+      : super_type(b, e, comp, alloc, value_size) {
   }
 
   // Insertion routines.
@@ -288,8 +292,9 @@ class btree_multi_container : public btree_container<Tree> {
  public:
   // Default constructor.
   btree_multi_container(const key_compare &comp = key_compare(),
-                        const allocator_type &alloc = allocator_type())
-      : super_type(comp, alloc) {
+                        const allocator_type &alloc = allocator_type(),
+                         int value_size = sizeof(value_type))
+      : super_type(comp, alloc, value_size) {
   }
 
   // Copy constructor.
@@ -301,8 +306,9 @@ class btree_multi_container : public btree_container<Tree> {
   template <class InputIterator>
   btree_multi_container(InputIterator b, InputIterator e,
                         const key_compare &comp = key_compare(),
-                        const allocator_type &alloc = allocator_type())
-      : super_type(comp, alloc) {
+                        const allocator_type &alloc = allocator_type(),
+                         int value_size = sizeof(value_type))
+      : super_type(comp, alloc, value_size) {
     insert(b, e);
   }
 

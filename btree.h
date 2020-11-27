@@ -260,15 +260,12 @@ struct btree_key_comparer<Key, Compare, true> {
 // depending on whether we have a compare-to functor or not (which depends on
 // whether Compare is derived from btree_key_compare_to_tag).
 template <typename Key, typename Compare>
-static bool btree_compare_keys(
-    const Compare &comp, const Key &x, const Key &y) {
-  typedef btree_key_comparer<Key, Compare,
-      btree_is_key_compare_to<Compare>::value> key_comparer;
+static bool btree_compare_keys(const Compare &comp, const Key &x, const Key &y) {
+  typedef btree_key_comparer<Key, Compare, btree_is_key_compare_to<Compare>::value> key_comparer;
   return key_comparer::bool_compare(comp, x, y);
 }
 
-template <typename Key, typename Compare,
-          typename Alloc, int TargetNodeSize, int ValueSize>
+template <typename Key, typename Compare, typename Alloc, int NodeValues>
 struct btree_common_params {
   // If Compare is derived from btree_key_compare_to_tag then use it as the
   // key_compare type. Otherwise, use btree_key_compare_to_adapter<> which will
@@ -286,27 +283,19 @@ struct btree_common_params {
   typedef ptrdiff_t difference_type;
 
   enum {
-    kTargetNodeSize = TargetNodeSize,
-
-    // Available space for values.  This is largest for leaf nodes,
-    // which has overhead no fewer than two pointers.
-    kNodeValueSpace = TargetNodeSize - 2 * sizeof(void*),
+    kNodeValues = NodeValues,
   };
 
-  // This is an integral type large enough to hold as many
-  // ValueSize-values as will fit a node of TargetNodeSize bytes.
+  // This is an integral type large enough to hold NodeValues+1.
   typedef typename if_<
-    (kNodeValueSpace / ValueSize) >= 256,
+    NodeValues >= 255,
     uint16_t,
     uint8_t>::type node_count_type;
 };
 
 // A parameters structure for holding the type parameters for a btree_map.
-template <typename Key, typename Data, typename Compare,
-          typename Alloc, int TargetNodeSize>
-struct btree_map_params
-    : public btree_common_params<Key, Compare, Alloc, TargetNodeSize,
-                                 sizeof(Key) + sizeof(Data)> {
+template <typename Key, typename Data, typename Compare, typename Alloc, int NodeValues>
+struct btree_map_params : public btree_common_params<Key, Compare, Alloc, NodeValues> {
   typedef Data data_type;
   typedef Data mapped_type;
   typedef std::pair<const Key, data_type> value_type;
@@ -315,10 +304,6 @@ struct btree_map_params
   typedef const value_type* const_pointer;
   typedef value_type& reference;
   typedef const value_type& const_reference;
-
-  enum {
-    kValueSize = sizeof(Key) + sizeof(data_type),
-  };
 
   static const Key& key(const value_type &x) { return x.first; }
   static const Key& key(const mutable_value_type &x) { return x.first; }
@@ -329,10 +314,8 @@ struct btree_map_params
 };
 
 // A parameters structure for holding the type parameters for a btree_set.
-template <typename Key, typename Compare, typename Alloc, int TargetNodeSize>
-struct btree_set_params
-    : public btree_common_params<Key, Compare, Alloc, TargetNodeSize,
-                                 sizeof(Key)> {
+template <typename Key, typename Compare, typename Alloc, int NodeValues>
+struct btree_set_params : public btree_common_params<Key, Compare, Alloc, NodeValues> {
   typedef std::false_type data_type;
   typedef std::false_type mapped_type;
   typedef Key value_type;
@@ -342,18 +325,13 @@ struct btree_set_params
   typedef value_type& reference;
   typedef const value_type& const_reference;
 
-  enum {
-    kValueSize = sizeof(Key),
-  };
-
   static const Key& key(const value_type &x) { return x; }
   static void swap(mutable_value_type *a, mutable_value_type *b) {
     btree_swap_helper<mutable_value_type>(*a, *b);
   }
 };
 
-// An adapter class that converts a lower-bound compare into an upper-bound
-// compare.
+// An adapter class that converts a lower-bound compare into an upper-bound compare.
 template <typename Key, typename Compare>
 struct btree_upper_bound_adapter : public Compare {
   btree_upper_bound_adapter(Compare c) : Compare(c) {}
@@ -389,8 +367,7 @@ struct btree_linear_search_compare_to {
     return n.linear_search_compare_to(k, 0, n.count(), comp);
   }
   static int upper_bound(const K &k, const N &n, CompareTo comp)  {
-    typedef btree_upper_bound_adapter<K,
-        btree_key_comparer<K, CompareTo, true> > upper_compare;
+    typedef btree_upper_bound_adapter<K, btree_key_comparer<K, CompareTo, true> > upper_compare;
     return n.linear_search_plain_compare(k, 0, n.count(), upper_compare(comp));
   }
 };
@@ -414,8 +391,7 @@ struct btree_binary_search_compare_to {
     return n.binary_search_compare_to(k, 0, n.count(), CompareTo());
   }
   static int upper_bound(const K &k, const N &n, CompareTo comp)  {
-    typedef btree_upper_bound_adapter<K,
-        btree_key_comparer<K, CompareTo, true> > upper_compare;
+    typedef btree_upper_bound_adapter<K, btree_key_comparer<K, CompareTo, true> > upper_compare;
     return n.linear_search_plain_compare(k, 0, n.count(), upper_compare(comp));
   }
 };
@@ -467,12 +443,21 @@ class btree_node {
     std::is_integral<key_type>::value ||
     std::is_floating_point<key_type>::value,
     linear_search_type, binary_search_type>::type search_type;
+  enum {
+    kLeaf = 0,
+    kInternal = 1,
+    kRoot = 2,
+  };
 
+  // FIXME: pack structure
   struct base_fields {
     typedef typename Params::node_count_type field_type;
 
-    // A boolean indicating whether the node is a leaf or not.
-    bool leaf;
+    // A number indicating whether the node is leaf, internal or root.
+    uint8_t node_type;
+    // Value size (stored in every node even though it's not 100% required...)
+    // FIXME: uint16_t -> template
+    uint16_t value_size;
     // The position of the node in the node's parent.
     field_type position;
     // The maximum number of values the node can hold.
@@ -484,27 +469,13 @@ class btree_node {
   };
 
   enum {
-    kValueSize = params_type::kValueSize,
-    kTargetNodeSize = params_type::kTargetNodeSize,
-
-    // Compute how many values we can fit onto a leaf node.
-    kNodeTargetValues = (kTargetNodeSize - sizeof(base_fields)) / kValueSize,
-    // We need a minimum of 3 values per internal node in order to perform
-    // splitting (1 value for the two nodes involved in the split and 1 value
-    // propagated to the parent as the delimiter for the split).
-    kNodeValues = kNodeTargetValues >= 3 ? kNodeTargetValues : 3,
-
     kExactMatch = 1 << 30,
     kMatchMask = kExactMatch - 1,
+    kNodeValues = Params::kNodeValues,
+    kMinNodeValues = kNodeValues / 2,
   };
 
-  struct leaf_fields : public base_fields {
-    // The array of values. Only the first count of these values have been
-    // constructed and are valid.
-    mutable_value_type values[kNodeValues];
-  };
-
-  struct internal_fields : public leaf_fields {
+  struct internal_fields : public base_fields {
     // The array of child pointers. The keys in children_[i] are all less than
     // key(i). The keys in children_[i + 1] are all greater than key(i). There
     // are always count + 1 children.
@@ -519,7 +490,7 @@ class btree_node {
  public:
   // Getter/setter for whether this is a leaf node or not. This value doesn't
   // change after the node is created.
-  bool leaf() const { return fields_.leaf; }
+  bool leaf() const { return fields_.node_type == kLeaf; }
 
   // Getter for the position of this node in its parent.
   int position() const { return fields_.position; }
@@ -549,25 +520,34 @@ class btree_node {
   size_type size() const { return fields_.size; }
   size_type* mutable_size() { return &fields_.size; }
 
+  // Getter for the value size
+  uint16_t value_size() const { return fields_.value_size; }
+
   // Getters for the key/value at position i in the node.
   const key_type& key(int i) const {
-    return params_type::key(fields_.values[i]);
+    return params_type::key(*((value_type*)data(i)));
   }
   reference value(int i) {
-    mutable_value_type *ptr = (mutable_value_type*)&fields_.values[i];
+    mutable_value_type *ptr = (mutable_value_type*)data(i);
     return reinterpret_cast<reference>(*ptr);
   }
   const_reference value(int i) const {
-    value_type *ptr = (value_type*)&fields_.values[i];
+    value_type *ptr = (value_type*)data(i);
     return reinterpret_cast<const_reference>(*ptr);
   }
   mutable_value_type* mutable_value(int i) {
-    return &fields_.values[i];
+    return (mutable_value_type*)data(i);
   }
 
   // Swap value i in this node with value j in node x.
   void value_swap(int i, btree_node *x, int j) {
     params_type::swap(mutable_value(i), x->mutable_value(j));
+    if (value_size() > sizeof(value_type)) {
+      uint8_t extra[value_size()-sizeof(value_type)];
+      memcpy(extra, mutable_value(i)+1, value_size()-sizeof(value_type));
+      memcpy(mutable_value(i)+1, x->mutable_value(j)+1, value_size()-sizeof(value_type));
+      memcpy(x->mutable_value(j)+1, extra, value_size()-sizeof(value_type));
+    }
   }
 
   // Getters/setter for the child at position i in the node.
@@ -593,8 +573,7 @@ class btree_node {
   // Returns the position of the first value whose key is not less than k using
   // linear search performed using plain compare.
   template <typename Compare>
-  int linear_search_plain_compare(
-      const key_type &k, int s, int e, const Compare &comp) const {
+  int linear_search_plain_compare(const key_type &k, int s, int e, const Compare &comp) const {
     while (s < e) {
       if (!btree_compare_keys(comp, key(s), k)) {
         break;
@@ -607,8 +586,7 @@ class btree_node {
   // Returns the position of the first value whose key is not less than k using
   // linear search performed using compare-to.
   template <typename Compare>
-  int linear_search_compare_to(
-      const key_type &k, int s, int e, const Compare &comp) const {
+  int linear_search_compare_to(const key_type &k, int s, int e, const Compare &comp) const {
     while (s < e) {
       int c = comp(key(s), k);
       if (c == 0) {
@@ -624,8 +602,7 @@ class btree_node {
   // Returns the position of the first value whose key is not less than k using
   // binary search performed using plain compare.
   template <typename Compare>
-  int binary_search_plain_compare(
-      const key_type &k, int s, int e, const Compare &comp) const {
+  int binary_search_plain_compare(const key_type &k, int s, int e, const Compare &comp) const {
     while (s != e) {
       int mid = (s + e) / 2;
       if (btree_compare_keys(comp, key(mid), k)) {
@@ -640,8 +617,7 @@ class btree_node {
   // Returns the position of the first value whose key is not less than k using
   // binary search performed using compare-to.
   template <typename CompareTo>
-  int binary_search_compare_to(
-      const key_type &k, int s, int e, const CompareTo &comp) const {
+  int binary_search_compare_to(const key_type &k, int s, int e, const CompareTo &comp) const {
     while (s != e) {
       int mid = (s + e) / 2;
       int c = comp(key(mid), k);
@@ -684,29 +660,36 @@ class btree_node {
   void swap(btree_node *src);
 
   // Node allocation/deletion routines.
-  static btree_node* init_leaf(
-      leaf_fields *f, btree_node *parent, int max_count) {
+  static btree_node* init_base(base_fields *f, btree_node *parent, int max_count, int value_size) {
     btree_node *n = reinterpret_cast<btree_node*>(f);
-    f->leaf = 1;
     f->position = 0;
+    f->value_size = value_size;
     f->max_count = max_count;
     f->count = 0;
     f->parent = parent;
     if (!NDEBUG) {
-      memset(&f->values, 0, max_count * sizeof(value_type));
+      memset(n->data(0), 0, max_count * value_size);
     }
     return n;
   }
-  static btree_node* init_internal(internal_fields *f, btree_node *parent) {
-    btree_node *n = init_leaf(f, parent, kNodeValues);
-    f->leaf = 0;
+  static btree_node* init_leaf(base_fields *f, btree_node *parent, int max_count, int value_size) {
+    f->node_type = kLeaf;
+    return init_base(f, parent, max_count, value_size);
+  }
+  static btree_node* init_internal(internal_fields *f, btree_node *parent, int value_size) {
+    f->node_type = kInternal;
+    btree_node *n = init_base(f, parent, kNodeValues, value_size);
     if (!NDEBUG) {
       memset(f->children, 0, sizeof(f->children));
     }
     return n;
   }
-  static btree_node* init_root(root_fields *f, btree_node *parent) {
-    btree_node *n = init_internal(f, parent);
+  static btree_node* init_root(root_fields *f, btree_node *parent, int value_size) {
+    f->node_type = kRoot;
+    btree_node *n = init_base(f, parent, kNodeValues, value_size);
+    if (!NDEBUG) {
+      memset(f->children, 0, sizeof(f->children));
+    }
     f->rightmost = parent;
     f->size = parent->count();
     return n;
@@ -719,13 +702,19 @@ class btree_node {
 
  private:
   void value_init(int i) {
-    new (&fields_.values[i]) mutable_value_type;
+    new (data(i)) mutable_value_type;
   }
   void value_init(int i, const value_type &x) {
-    new (&fields_.values[i]) mutable_value_type(x);
+    new (data(i)) mutable_value_type(x);
   }
   void value_destroy(int i) {
-    fields_.values[i].~mutable_value_type();
+    ((mutable_value_type*)data(i))->~mutable_value_type();
+  }
+  void* data(int i) const {
+    return (void*)((uint8_t*)&fields_ + (fields_.node_type == kLeaf
+      ? sizeof(base_fields)
+      : (fields_.node_type == kInternal ? sizeof(internal_fields) : sizeof(root_fields)))
+      + i * value_size());
   }
 
  private:
@@ -857,7 +846,6 @@ class btree : public Params::key_compare {
   typedef btree<Params> self_type;
   typedef btree_node<Params> node_type;
   typedef typename node_type::base_fields base_fields;
-  typedef typename node_type::leaf_fields leaf_fields;
   typedef typename node_type::internal_fields internal_fields;
   typedef typename node_type::root_fields root_fields;
   typedef typename Params::is_key_compare_to is_key_compare_to;
@@ -870,11 +858,10 @@ class btree : public Params::key_compare {
     btree_internal_locate_plain_compare>::type internal_locate_type;
 
   enum {
-    kNodeValues = node_type::kNodeValues,
-    kMinNodeValues = kNodeValues / 2,
-    kValueSize = node_type::kValueSize,
     kExactMatch = node_type::kExactMatch,
     kMatchMask = node_type::kMatchMask,
+    kNodeValues = node_type::kNodeValues,
+    kMinNodeValues = node_type::kMinNodeValues,
   };
 
   // A helper class to get the empty base class optimization for 0-size
@@ -932,7 +919,7 @@ class btree : public Params::key_compare {
 
  public:
   // Default constructor.
-  btree(const key_compare &comp, const allocator_type &alloc);
+  btree(const key_compare &comp, const allocator_type &alloc, int value_size);
 
   // Copy constructor.
   btree(const self_type &x);
@@ -1176,21 +1163,21 @@ class btree : public Params::key_compare {
     node_stats stats = internal_stats(root());
     if (stats.leaf_nodes == 1 && stats.internal_nodes == 0) {
       return sizeof(*this) +
-          sizeof(base_fields) + root()->max_count() * sizeof(value_type);
+          sizeof(base_fields) + root()->max_count() * value_size_;
     } else {
       return sizeof(*this) +
           sizeof(root_fields) - sizeof(internal_fields) +
-          stats.leaf_nodes * sizeof(leaf_fields) +
+          stats.leaf_nodes * (sizeof(base_fields) + root()->max_count() * value_size_) +
           stats.internal_nodes * sizeof(internal_fields);
     }
   }
 
   // The average number of bytes used per value stored in the btree.
-  static double average_bytes_per_value() {
+  double average_bytes_per_value() {
     // Returns the number of bytes per value on a leaf node that is 75%
     // full. Experimentally, this matches up nicely with the computed number of
     // bytes per value in trees that had their values inserted in random order.
-    return sizeof(leaf_fields) / (kNodeValues * 0.75);
+    return value_size_ / 0.75;
   }
 
   // The fullness of the btree. Computed as the number of elements in the btree
@@ -1198,7 +1185,7 @@ class btree : public Params::key_compare {
   // of nodes could hold. A value of 1 indicates perfect space
   // utilization. Smaller values indicate space wastage.
   double fullness() const {
-    return double(size()) / (nodes() * kNodeValues);
+    return double(size()) / (nodes() * Params::kNodeValues);
   }
   // The overhead of the btree structure in bytes per node. Computed as the
   // total number of bytes used by the btree minus the number of bytes used for
@@ -1207,7 +1194,7 @@ class btree : public Params::key_compare {
     if (empty()) {
       return 0.0;
     }
-    return (bytes_used() - size() * kValueSize) / double(size());
+    return (bytes_used() - size() * value_size_) / double(size());
   }
 
  private:
@@ -1243,41 +1230,40 @@ class btree : public Params::key_compare {
   // Node creation/deletion routines.
   node_type* new_internal_node(node_type *parent) {
     internal_fields *p = reinterpret_cast<internal_fields*>(
-        mutable_internal_allocator()->allocate(sizeof(internal_fields)));
-    return node_type::init_internal(p, parent);
+        mutable_internal_allocator()->allocate(sizeof(internal_fields) + value_size_ * Params::kNodeValues));
+    return node_type::init_internal(p, parent, value_size_);
   }
   node_type* new_internal_root_node() {
     root_fields *p = reinterpret_cast<root_fields*>(
-        mutable_internal_allocator()->allocate(sizeof(root_fields)));
-    return node_type::init_root(p, root()->parent());
+        mutable_internal_allocator()->allocate(sizeof(root_fields) + value_size_ * Params::kNodeValues));
+    return node_type::init_root(p, root()->parent(), value_size_);
   }
   node_type* new_leaf_node(node_type *parent) {
-    leaf_fields *p = reinterpret_cast<leaf_fields*>(
-        mutable_internal_allocator()->allocate(sizeof(leaf_fields)));
-    return node_type::init_leaf(p, parent, kNodeValues);
+    base_fields *p = reinterpret_cast<base_fields*>(
+        mutable_internal_allocator()->allocate(sizeof(base_fields) + value_size_ * Params::kNodeValues));
+    return node_type::init_leaf(p, parent, Params::kNodeValues, value_size_);
   }
   node_type* new_leaf_root_node(int max_count) {
-    leaf_fields *p = reinterpret_cast<leaf_fields*>(
-        mutable_internal_allocator()->allocate(
-            sizeof(base_fields) + max_count * sizeof(value_type)));
-    return node_type::init_leaf(p, reinterpret_cast<node_type*>(p), max_count);
+    base_fields *p = reinterpret_cast<base_fields*>(
+        mutable_internal_allocator()->allocate(sizeof(base_fields) + value_size_ * Params::kNodeValues));
+    return node_type::init_leaf(p, reinterpret_cast<node_type*>(p), Params::kNodeValues, value_size_);
   }
   void delete_internal_node(node_type *node) {
     node->destroy();
     assert(node != root());
     mutable_internal_allocator()->deallocate(
-        reinterpret_cast<char*>(node), sizeof(internal_fields));
+        reinterpret_cast<char*>(node), sizeof(internal_fields) + value_size_ * Params::kNodeValues);
   }
   void delete_internal_root_node() {
     root()->destroy();
     mutable_internal_allocator()->deallocate(
-        reinterpret_cast<char*>(root()), sizeof(root_fields));
+        reinterpret_cast<char*>(root()), sizeof(root_fields) + value_size_ * Params::kNodeValues);
   }
   void delete_leaf_node(node_type *node) {
     node->destroy();
     mutable_internal_allocator()->deallocate(
         reinterpret_cast<char*>(node),
-        sizeof(base_fields) + node->max_count() * sizeof(value_type));
+        sizeof(base_fields) + node->max_count() * value_size_);
   }
 
   // Rebalances or splits the node iter points to.
@@ -1379,6 +1365,7 @@ class btree : public Params::key_compare {
 
  private:
   empty_base_handle<internal_allocator_type, node_type*> root_;
+  int value_size_;
 
  private:
   // A never instantiated helper function that returns big_ if we have a
@@ -1405,9 +1392,8 @@ class btree : public Params::key_compare {
       sizeof(big_),
       key_comparison_function_must_return_bool);
 
-  // Note: We insist on kTargetValues, which is computed from
-  // Params::kTargetNodeSize, must fit the base_fields::field_type.
-  COMPILE_ASSERT(kNodeValues <
+  // Note: We insist on kTargetValues must fit the base_fields::field_type.
+  COMPILE_ASSERT(Params::kNodeValues <
                  (1 << (8 * sizeof(typename base_fields::field_type))),
                  target_node_size_too_large);
 
@@ -1727,9 +1713,11 @@ void btree_iterator<N, R, P>::decrement_slow() {
 ////
 // btree methods
 template <typename P>
-btree<P>::btree(const key_compare &comp, const allocator_type &alloc)
+btree<P>::btree(const key_compare &comp, const allocator_type &alloc, int value_size)
     : key_compare(comp),
-      root_(alloc, NULL) {
+      root_(alloc, NULL),
+      value_size_(value_size) {
+  assert(value_size >= sizeof(value_type));
 }
 
 template <typename P>

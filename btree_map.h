@@ -37,13 +37,12 @@ namespace btree {
 template <typename Key, typename Value,
           typename Compare = std::less<Key>,
           typename Alloc = std::allocator<std::pair<const Key, Value> >,
-          int TargetNodeSize = 256>
+          int NodeValues = 16>
 class btree_map : public btree_map_container<
-  btree<btree_map_params<Key, Value, Compare, Alloc, TargetNodeSize> > > {
+  btree<btree_map_params<Key, Value, Compare, Alloc, NodeValues> > > {
 
-  typedef btree_map<Key, Value, Compare, Alloc, TargetNodeSize> self_type;
-  typedef btree_map_params<
-    Key, Value, Compare, Alloc, TargetNodeSize> params_type;
+  typedef btree_map<Key, Value, Compare, Alloc, NodeValues> self_type;
+  typedef btree_map_params<Key, Value, Compare, Alloc, NodeValues> params_type;
   typedef btree<params_type> btree_type;
   typedef btree_map_container<btree_type> super_type;
 
@@ -53,9 +52,10 @@ class btree_map : public btree_map_container<
 
  public:
   // Default constructor.
-  btree_map(const key_compare &comp = key_compare(),
+  btree_map(int extra_size = 0,
+            const key_compare &comp = key_compare(),
             const allocator_type &alloc = allocator_type())
-      : super_type(comp, alloc) {
+      : super_type(comp, alloc, sizeof(typename btree_type::value_type)+extra_size) {
   }
 
   // Copy constructor.
@@ -66,9 +66,10 @@ class btree_map : public btree_map_container<
   // Range constructor.
   template <class InputIterator>
   btree_map(InputIterator b, InputIterator e,
+            int extra_size = 0,
             const key_compare &comp = key_compare(),
             const allocator_type &alloc = allocator_type())
-      : super_type(b, e, comp, alloc) {
+      : super_type(b, e, comp, alloc, sizeof(typename btree_type::value_type)+extra_size) {
   }
 };
 
@@ -82,13 +83,12 @@ inline void swap(btree_map<K, V, C, A, N> &x,
 template <typename Key, typename Value,
           typename Compare = std::less<Key>,
           typename Alloc = std::allocator<std::pair<const Key, Value> >,
-          int TargetNodeSize = 256>
+          int NodeValues = 16>
 class btree_multimap : public btree_multi_container<
-  btree<btree_map_params<Key, Value, Compare, Alloc, TargetNodeSize> > > {
+  btree<btree_map_params<Key, Value, Compare, Alloc, NodeValues> > > {
 
-  typedef btree_multimap<Key, Value, Compare, Alloc, TargetNodeSize> self_type;
-  typedef btree_map_params<
-    Key, Value, Compare, Alloc, TargetNodeSize> params_type;
+  typedef btree_multimap<Key, Value, Compare, Alloc, NodeValues> self_type;
+  typedef btree_map_params<Key, Value, Compare, Alloc, NodeValues> params_type;
   typedef btree<params_type> btree_type;
   typedef btree_multi_container<btree_type> super_type;
 
